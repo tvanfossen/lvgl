@@ -21,4 +21,21 @@
 #endif
 
 
+/* Diagnostic: log RAPIDJSON_ASSERT location before aborting.
+ * Routes through ESP-IDF log -> debug_log vprintf hook -> SD card for post-mortem.
+ * Must be defined before rapidjson headers are included (config.h is included first). */
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern int esp_log_write(int level, const char *tag, const char *format, ...);
+#ifdef __cplusplus
+}
+#endif
+#define RAPIDJSON_ASSERT(x) \
+    do { if (!(x)) { \
+        esp_log_write(1, "TVGJSON", \
+            "RAPIDJSON_ASSERT(%s) FAILED at %s:%d", #x, __FILE__, __LINE__); \
+        abort(); \
+    } } while(0)
+
 #endif /*TVG_CONFIG_H*/

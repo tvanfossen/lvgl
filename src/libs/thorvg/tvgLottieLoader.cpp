@@ -40,13 +40,21 @@ void LottieLoader::run(unsigned tid)
         builder->update(comp, frameNo);
     //initial loading
     } else {
+        esp_log_write(1, "TVG", "run: creating LottieParser");
         LottieParser parser(content, dirName);
-        if (!parser.parse()) return;
+        esp_log_write(1, "TVG", "run: calling parser.parse()");
+        if (!parser.parse()) {
+            esp_log_write(1, "TVG", "run: parser.parse() returned false");
+            return;
+        }
+        esp_log_write(1, "TVG", "run: parse OK, comp=%p", parser.comp);
         {
             ScopedLock lock(key);
             comp = parser.comp;
         }
+        esp_log_write(1, "TVG", "run: calling builder->build(comp)");
         builder->build(comp);
+        esp_log_write(1, "TVG", "run: build done");
 
         release();
     }
@@ -71,7 +79,7 @@ void LottieLoader::release()
 
 LottieLoader::LottieLoader() : FrameModule(FileType::Lottie), builder(new LottieBuilder)
 {
-
+    esp_log_write(1, "TVG", "LottieLoader ctor: builder=%p", builder);
 }
 
 
@@ -91,8 +99,11 @@ bool LottieLoader::header()
 {
     //A single thread doesn't need to perform intensive tasks.
     if (TaskScheduler::threads() == 0) {
+        esp_log_write(1, "TVG", "header: single-thread, calling LoadModule::read()");
         LoadModule::read();
+        esp_log_write(1, "TVG", "header: calling run(0)");
         run(0);
+        esp_log_write(1, "TVG", "header: run(0) done, comp=%p", comp);
         if (comp) {
             w = static_cast<float>(comp->w);
             h = static_cast<float>(comp->h);
@@ -219,7 +230,9 @@ bool LottieLoader::open(const char* data, uint32_t size, bool copy)
 
 bool LottieLoader::open(const string& path)
 {
+    esp_log_write(1, "TVG", "open: start path=%s", path.c_str());
     auto f = fopen(path.c_str(), "r");
+    esp_log_write(1, "TVG", "open: fopen=%p", f);
     if (!f) return false;
 
     fseek(f, 0, SEEK_END);
@@ -231,6 +244,7 @@ bool LottieLoader::open(const string& path)
     }
 
     auto content = (char*)(lv_malloc(sizeof(char) * size + 1));
+    esp_log_write(1, "TVG", "open: lv_malloc content=%p size=%u", content, (unsigned)size);
     LV_ASSERT_MALLOC(content);
     fseek(f, 0, SEEK_SET);
     auto ret = fread(content, sizeof(char), size, f);
@@ -246,6 +260,7 @@ bool LottieLoader::open(const string& path)
     this->content = content;
     this->copy = true;
 
+    esp_log_write(1, "TVG", "open: calling header()");
     return header();
 }
 

@@ -85,6 +85,14 @@ void lv_lottie_set_src_file(lv_obj_t * obj, const char * src);
  */
 lv_anim_t * lv_lottie_get_anim(lv_obj_t * obj);
 
+/**
+ * Check whether the background render task failed to start (e.g. insufficient PSRAM).
+ * When true the widget will remain blank; callers should substitute a text label.
+ * @param obj   pointer to a lottie widget
+ * @return      true if the render task could not be created
+ */
+bool lv_lottie_render_failed(lv_obj_t * obj);
+
 /**********************
  * GLOBAL VARIABLES
  **********************/

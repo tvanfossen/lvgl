@@ -55,7 +55,7 @@ else()
     set_source_files_properties(${DEMO_MUSIC_SOURCES} COMPILE_FLAGS "-Wno-format")
   endif()
 
-  set(IDF_COMPONENTS esp_timer log)
+  set(IDF_COMPONENTS esp_timer log lvgl_mem_esp)
 
   if(${target} STREQUAL "esp32p4")
     list(APPEND IDF_COMPONENTS esp_driver_ppa esp_mm)
@@ -72,6 +72,15 @@ else()
 endif()
 
 target_compile_definitions(${COMPONENT_LIB} PUBLIC "-DLV_CONF_INCLUDE_SIMPLE")
+
+# Force-include ThorVG config.h into all ThorVG C++ sources.
+# Required so our RAPIDJSON_ASSERT diagnostic override takes effect — without this,
+# config.h is only included by 3 of the ~50 ThorVG .cpp files and the override is dead code.
+file(GLOB_RECURSE THORVG_CPP_SOURCES ${LVGL_ROOT_DIR}/src/libs/thorvg/*.cpp)
+foreach(_src ${THORVG_CPP_SOURCES})
+  set_property(SOURCE ${_src} APPEND_STRING PROPERTY COMPILE_FLAGS
+    " -include ${LVGL_ROOT_DIR}/src/libs/thorvg/config.h")
+endforeach()
 
 if(CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM)
   target_compile_definitions(${COMPONENT_LIB}
