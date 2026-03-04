@@ -35,7 +35,6 @@ extern "C" {
 #endif
 
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "freertos/semphr.h"
 
 typedef struct {
@@ -46,16 +45,12 @@ typedef struct {
     lv_anim_t * anim;
     int32_t last_rendered_time;
 
-    /* --- render task sync --- */
+    /* --- shared render task sync --- */
     bool src_loaded;              /**< True once source loaded; guards lottie_update */
-    bool initial_render_done;     /**< First render inline on load-task stack; later via render_task */
-    bool destroying;              /**< Tells render_task to exit its loop */
-    bool render_failed;           /**< render_task creation failed; widget stays blank */
-    volatile int32_t render_frame; /**< Frame to render: written by LVGL task, read by render_task */
-    TaskHandle_t     render_task;
-    SemaphoreHandle_t render_start_sem; /**< Binary: LVGL task → render_task (start frame) */
-    SemaphoreHandle_t render_done_sem;  /**< Binary: render_task → LVGL task (frame complete) */
-    SemaphoreHandle_t render_exit_sem;  /**< Binary: render_task → destructor (task exiting) */
+    bool initial_render_done;     /**< First render inline on load-task stack; later via shared render_task */
+    bool destroying;              /**< Tells render_task to skip jobs from this widget */
+    bool render_failed;           /**< Shared task creation failed; widget stays blank */
+    SemaphoreHandle_t render_done_sem;  /**< Binary: shared render_task signals this widget on frame complete */
 } lv_lottie_t;
 
 /**********************

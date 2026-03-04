@@ -16,7 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-/* idf_additions.h intentionally not included: task created via standard xTaskCreate */
+#include "freertos/queue.h"
 static const char * LV_LOTTIE_TAG = "lv_lottie";
 
 #if LV_USE_THORVG_EXTERNAL
@@ -34,10 +34,13 @@ static const char * LV_LOTTIE_TAG = "lv_lottie";
  *********************/
 #define MY_CLASS (&lv_lottie_class)
 
-/** Stack for the permanent ThorVG render task, allocated from SPIRAM.
- *  ThorVG rasterisation uses ~30 KB; 96 KB gives comfortable headroom for
- *  complex animations.  SPIRAM is plentiful so size generously. */
-#define LOTTIE_RENDER_TASK_STACK    (96 * 1024)
+/** Stack for the shared ThorVG render task (singleton — all widgets share one task).
+ *  ESP32-P4 FreeRTOS port rejects SPIRAM task stacks (portVALID_STACK_MEM assert),
+ *  so the stack lives in static BSS (internal DRAM) — fixed cost regardless of
+ *  instance count.
+ *  32 KB = LV_DRAW_THREAD_STACK_SIZE minimum for ThorVG (lv_conf_internal.h:4954).
+ *  + 8 KB overhead/margin = 40 KB total. */
+#define LOTTIE_RENDER_TASK_STACK    (40 * 1024)
 
 /** Warn when render task stack headroom falls below this threshold. */
 #define LOTTIE_RENDER_MIN_HW        (8 * 1024)
@@ -45,6 +48,12 @@ static const char * LV_LOTTIE_TAG = "lv_lottie";
 /**********************
  *      TYPEDEFS
  **********************/
+
+/** Job dispatched by lottie_update() to the shared render task via s_render_queue. */
+typedef struct {
+    lv_lottie_t * lottie;
+    int32_t       frame;
+} lottie_job_t;
 
 /**********************
  *  STATIC PROTOTYPES
@@ -67,6 +76,15 @@ const lv_obj_class_t lv_lottie_class = {
     .base_class = &lv_canvas_class,
     .name = "lv_lottie",
 };
+
+/* Shared render task — created once on first Lottie widget, runs for device lifetime.
+ * Stack and TCB in static BSS (internal DRAM); no heap allocation needed.
+ * When no widgets exist the task blocks on the empty queue at zero CPU cost. */
+static TaskHandle_t  s_render_task  = NULL;
+static StaticTask_t  s_render_tcb;
+static StackType_t   s_render_stack[LOTTIE_RENDER_TASK_STACK / sizeof(StackType_t)];
+static QueueHandle_t s_render_queue = NULL;
+static int           s_lottie_count = 0; /* live widget count — for logging only */
 
 /**********************
  *  GLOBAL VARIABLES
@@ -181,7 +199,6 @@ void lv_lottie_set_src_file(lv_obj_t * obj, const char * src)
     ESP_LOGE(LV_LOTTIE_TAG, "CP8: lottie_update done");
 }
 
-
 lv_anim_t * lv_lottie_get_anim(lv_obj_t * obj)
 {
     LV_ASSERT_OBJ(obj, MY_CLASS);
@@ -204,7 +221,7 @@ static void lv_lottie_constructor(const lv_obj_class_t * class_p, lv_obj_t * obj
 {
     LV_UNUSED(class_p);
     LV_TRACE_OBJ_CREATE("begin");
-    ESP_LOGE(LV_LOTTIE_TAG, "ctor: ENTRY obj=%p", obj);
+    ESP_LOGE(LV_LOTTIE_TAG, "ctor: ENTRY obj=%p count=%d", obj, s_lottie_count);
 
     lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     ESP_LOGE(LV_LOTTIE_TAG, "ctor: set_size done");
@@ -212,69 +229,62 @@ static void lv_lottie_constructor(const lv_obj_class_t * class_p, lv_obj_t * obj
     lv_lottie_t * lottie = (lv_lottie_t *)obj;
     ESP_LOGE(LV_LOTTIE_TAG, "ctor: tvg_animation_new");
     lottie->tvg_anim = tvg_animation_new();
-
     ESP_LOGE(LV_LOTTIE_TAG, "ctor: tvg_animation_get_picture");
     lottie->tvg_paint = tvg_animation_get_picture(lottie->tvg_anim);
     ESP_LOGE(LV_LOTTIE_TAG, "ctor: tvg_swcanvas_create");
     lottie->tvg_canvas = tvg_swcanvas_create();
-    ESP_LOGE(LV_LOTTIE_TAG, "ctor: tvg init done, creating semaphores");
 
-    lottie->src_loaded        = false;
+    lottie->src_loaded          = false;
     lottie->initial_render_done = false;
-    lottie->destroying        = false;
-    lottie->render_failed     = false;
-    lottie->render_frame      = 0;
-    lottie->render_task       = NULL;
-    lottie->render_start_sem  = NULL;
-    lottie->render_done_sem   = NULL;
-    lottie->render_exit_sem   = NULL;
+    lottie->destroying          = false;
+    lottie->render_failed       = false;
+    lottie->render_done_sem     = NULL;
     ESP_LOGE(LV_LOTTIE_TAG, "ctor: fields init done, internal_free=%lu",
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
-    /* Create semaphores */
-    ESP_LOGE(LV_LOTTIE_TAG, "ctor: xSemaphoreCreateBinary #1");
-    lottie->render_start_sem = xSemaphoreCreateBinary();
-    ESP_LOGE(LV_LOTTIE_TAG, "ctor: start_sem=%p", lottie->render_start_sem);
-    ESP_LOGE(LV_LOTTIE_TAG, "ctor: xSemaphoreCreateBinary #2");
-    lottie->render_done_sem  = xSemaphoreCreateBinary();
+    lottie->render_done_sem = xSemaphoreCreateBinary();
     ESP_LOGE(LV_LOTTIE_TAG, "ctor: done_sem=%p", lottie->render_done_sem);
-    ESP_LOGE(LV_LOTTIE_TAG, "ctor: xSemaphoreCreateBinary #3");
-    lottie->render_exit_sem  = xSemaphoreCreateBinary();
-    ESP_LOGE(LV_LOTTIE_TAG, "ctor: exit_sem=%p", lottie->render_exit_sem);
 
-    if(!lottie->render_start_sem || !lottie->render_done_sem || !lottie->render_exit_sem) {
-        ESP_LOGE(LV_LOTTIE_TAG, "lottie: semaphore creation failed");
+    if(!lottie->render_done_sem) {
+        ESP_LOGE(LV_LOTTIE_TAG, "lottie: done_sem creation failed");
         lottie->render_failed = true;
     }
-    else {
-        /* Create permanent render task with stack in SPIRAM.
-         * LVGL task blocks on render_done_sem during each render, so there
-         * is no race between ThorVG writing the canvas buffer and LVGL
-         * flushing it to the display. */
-        /* Use standard xTaskCreate so pvPortMalloc routes the 96 KB stack
-         * automatically to SPIRAM (96 KB > ALWAYSINTERNAL=4096 threshold).
-         * TCB (~350 B, ≤4096) stays in DRAM — scheduler-safe.
-         * xTaskCreateWithCaps(SPIRAM) asserts/aborts internally on ESP32-P4. */
-        ESP_LOGE(LV_LOTTIE_TAG, "ctor: xTaskCreate stack=%u", LOTTIE_RENDER_TASK_STACK);
-        BaseType_t ret = xTaskCreate(
-            lottie_render_task, "lottie_rndr",
-            LOTTIE_RENDER_TASK_STACK / sizeof(StackType_t), lottie,
-            4,                                   /* priority: below LVGL (5), above idle */
-            &lottie->render_task);
-        ESP_LOGE(LV_LOTTIE_TAG, "ctor: xTaskCreate ret=%d task=%p", (int)ret, lottie->render_task);
-
-        if(ret != pdPASS) {
-            ESP_LOGE(LV_LOTTIE_TAG,
-                     "lottie: render task creation failed — SPIRAM free=%lu B",
-                     (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    else if(s_render_task == NULL) {
+        /* First instance: create shared queue and render task.
+         * Task uses static BSS stack + TCB (internal DRAM).
+         * ESP32-P4 FreeRTOS port aborts on SPIRAM stacks (portVALID_STACK_MEM).
+         * Static allocation = fixed 40 KB DRAM cost for ALL instances combined. */
+        s_render_queue = xQueueCreate(1, sizeof(lottie_job_t));
+        if(!s_render_queue) {
+            ESP_LOGE(LV_LOTTIE_TAG, "lottie: render queue creation failed");
             lottie->render_failed = true;
         }
         else {
-            ESP_LOGI(LV_LOTTIE_TAG,
-                     "lottie: render task started (stack=%u B, SPIRAM free=%lu B)",
-                     LOTTIE_RENDER_TASK_STACK,
-                     (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+            s_render_task = xTaskCreateStatic(
+                lottie_render_task, "lottie_rndr",
+                LOTTIE_RENDER_TASK_STACK / sizeof(StackType_t),
+                NULL, 4, s_render_stack, &s_render_tcb);
+
+            if(!s_render_task) {
+                ESP_LOGE(LV_LOTTIE_TAG, "lottie: shared render task creation failed");
+                vQueueDelete(s_render_queue);
+                s_render_queue = NULL;
+                lottie->render_failed = true;
+            }
+            else {
+                ESP_LOGI(LV_LOTTIE_TAG,
+                         "lottie: shared render task started (stack=%u B DRAM, DRAM free=%lu B)",
+                         LOTTIE_RENDER_TASK_STACK,
+                         (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            }
         }
+    }
+    else {
+        ESP_LOGI(LV_LOTTIE_TAG, "lottie: reusing shared render task (count=%d)", s_lottie_count);
+    }
+
+    if(!lottie->render_failed) {
+        s_lottie_count++;
     }
 
     lv_anim_t a;
@@ -292,18 +302,20 @@ static void lv_lottie_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
     LV_UNUSED(class_p);
     lv_lottie_t * lottie = (lv_lottie_t *)obj;
 
-    /* Ask render task to exit, then wait for it to acknowledge */
-    if(lottie->render_task) {
-        lottie->destroying = true;
-        if(lottie->render_start_sem) xSemaphoreGive(lottie->render_start_sem);
-        if(lottie->render_exit_sem)
-            xSemaphoreTake(lottie->render_exit_sem, pdMS_TO_TICKS(500));
-        lottie->render_task = NULL;
+    /* Mark widget as dead so render_task skips any queued job for it.
+     * Safe: LVGL is single-threaded — no lottie_update() can be in flight
+     * when the destructor runs (they run on the same LVGL task). */
+    lottie->destroying = true;
+
+    if(!lottie->render_failed) {
+        s_lottie_count--;
+        ESP_LOGI(LV_LOTTIE_TAG, "lottie: destroyed, count now=%d", s_lottie_count);
     }
 
-    if(lottie->render_start_sem) { vSemaphoreDelete(lottie->render_start_sem); lottie->render_start_sem = NULL; }
-    if(lottie->render_done_sem)  { vSemaphoreDelete(lottie->render_done_sem);  lottie->render_done_sem  = NULL; }
-    if(lottie->render_exit_sem)  { vSemaphoreDelete(lottie->render_exit_sem);  lottie->render_exit_sem  = NULL; }
+    if(lottie->render_done_sem) {
+        vSemaphoreDelete(lottie->render_done_sem);
+        lottie->render_done_sem = NULL;
+    }
 
     tvg_animation_del(lottie->tvg_anim);
     tvg_canvas_destroy(lottie->tvg_canvas);
@@ -330,44 +342,51 @@ static void anim_exec_cb(void * var, int32_t v)
 }
 
 /**
- * Permanent background render task.  Stack lives in SPIRAM so the LVGL
- * task stack (DRAM) is not consumed by ThorVG rasterisation.
+ * Shared background render task (singleton — one task for all Lottie widgets).
+ * Stack: 40 KB static DRAM BSS. ESP32-P4 FreeRTOS port rejects SPIRAM stacks.
  *
- * Protocol with lottie_update():
- *   1. LVGL task sets render_frame, gives render_start_sem, then blocks on render_done_sem.
- *   2. This task wakes, clears the draw buffer, runs the full ThorVG pipeline,
+ * Dispatch protocol with lottie_update():
+ *   1. LVGL task (single-threaded) sends job {lottie, frame} to s_render_queue.
+ *   2. LVGL task blocks on per-widget lottie->render_done_sem.
+ *   3. This task dequeues the job, clears buffer, runs ThorVG pipeline,
  *      then gives render_done_sem to unblock the LVGL task.
- *   3. Because the LVGL task is blocked (holding the LVGL mutex), there is no
- *      concurrent flush racing against the ThorVG write.
+ *   4. The LVGL task is blocked during rendering — no concurrent canvas flush.
+ *
+ * Multiple widgets serialize naturally: LVGL blocks per-widget until each
+ * frame completes before dispatching the next widget's frame.
  */
 static void lottie_render_task(void * arg)
 {
-    lv_lottie_t * lottie = (lv_lottie_t *)arg;
-    lv_obj_t * obj = (lv_obj_t *)lottie;
+    (void)arg;
     volatile uint8_t _probe = 0;
-    ESP_LOGI(LV_LOTTIE_TAG, "render_task: started, stack_addr=%p (SPIRAM=0x48xxxxxx)",
-             (void *)&_probe);
+    ESP_LOGI(LV_LOTTIE_TAG, "render_task: started stack_addr=%p DRAM free=%lu B",
+             (void *)&_probe,
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
-    while(!lottie->destroying) {
-        xSemaphoreTake(lottie->render_start_sem, portMAX_DELAY);
-        if(lottie->destroying) break;
+    lottie_job_t job;
+    while(1) {
+        xQueueReceive(s_render_queue, &job, portMAX_DELAY);
 
-        int32_t frame = lottie->render_frame;
+        lv_lottie_t * lottie = job.lottie;
 
-        /* Clear the draw buffer before each frame: ThorVG only writes
-         * non-transparent pixels so stale data must be zeroed first. */
-        lv_draw_buf_t * draw_buf = lv_canvas_get_draw_buf(obj);
+        /* Widget was destroyed between dispatch and dequeue (belt-and-suspenders) */
+        if(lottie->destroying) {
+            xSemaphoreGive(lottie->render_done_sem);
+            continue;
+        }
+
+        /* Clear draw buffer before each frame: ThorVG only writes non-transparent
+         * pixels so stale data must be zeroed first. */
+        lv_draw_buf_t * draw_buf = lv_canvas_get_draw_buf((lv_obj_t *)lottie);
         if(draw_buf) lv_draw_buf_clear(draw_buf, NULL);
 
-        tvg_animation_set_frame(lottie->tvg_anim, frame);
+        tvg_animation_set_frame(lottie->tvg_anim, job.frame);
         tvg_canvas_update(lottie->tvg_canvas);
         tvg_canvas_draw(lottie->tvg_canvas);
         tvg_canvas_sync(lottie->tvg_canvas);
 
-        /* Unblock LVGL task — frame is ready */
         xSemaphoreGive(lottie->render_done_sem);
 
-        /* Monitor headroom; complex animations may need a larger stack */
         uint32_t hw = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
         if(hw < LOTTIE_RENDER_MIN_HW) {
             ESP_LOGE(LV_LOTTIE_TAG,
@@ -375,11 +394,6 @@ static void lottie_render_task(void * arg)
                      (unsigned long)hw);
         }
     }
-
-    ESP_LOGI(LV_LOTTIE_TAG, "render_task: exiting, final hw=%lu B",
-             (unsigned long)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    xSemaphoreGive(lottie->render_exit_sem);
-    vTaskDelete(NULL);  /* matches xTaskCreate; idle task frees TCB+stack */
 }
 
 static void lottie_update(lv_lottie_t * lottie, int32_t v)
@@ -391,9 +405,9 @@ static void lottie_update(lv_lottie_t * lottie, int32_t v)
     lv_obj_t * obj = (lv_obj_t *) lottie;
 
     if(!lottie->initial_render_done) {
-        /* First render: run inline on the calling stack (the load task's 64 KB DRAM
-         * stack).  The render_task is not used here to avoid a cross-task semaphore
-         * deadlock while the LVGL lock is held by the load task. */
+        /* First render: run inline on the calling stack (load task's DRAM stack).
+         * The shared render_task is not used here because the load task holds the
+         * LVGL lock — dispatching to another task would deadlock. */
         lv_draw_buf_t * draw_buf = lv_canvas_get_draw_buf(obj);
         if(draw_buf) {
             lv_draw_buf_clear(draw_buf, NULL);
@@ -416,14 +430,12 @@ static void lottie_update(lv_lottie_t * lottie, int32_t v)
         return;
     }
 
-    /* Subsequent frames: dispatch to render_task (96 KB SPIRAM stack).
+    /* Subsequent frames: dispatch to shared render task.
      *
-     * The LVGL task blocks on render_done_sem so LVGL cannot flush the canvas
-     * buffer while ThorVG is writing it — no tearing, no race condition.
-     * FreeRTOS can still schedule other non-LVGL tasks (WiFi, SD, etc.) during
-     * this wait because the block is at the FreeRTOS level, not a busy-wait. */
-    lottie->render_frame = v;
-    xSemaphoreGive(lottie->render_start_sem);
+     * LVGL task blocks on render_done_sem — ThorVG cannot race with display flush.
+     * FreeRTOS schedules other tasks (WiFi, SD, etc.) during this wait. */
+    lottie_job_t job = {lottie, v};
+    xQueueSend(s_render_queue, &job, portMAX_DELAY);
     xSemaphoreTake(lottie->render_done_sem, portMAX_DELAY);
 
     lv_image_cache_drop(lv_image_get_src(obj));
