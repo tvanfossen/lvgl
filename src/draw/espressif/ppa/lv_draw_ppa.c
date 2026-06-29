@@ -135,6 +135,47 @@ static int32_t ppa_evaluate(lv_draw_unit_t * u, lv_draw_task_t * t)
                 }
                 return 1;
             }
+
+        case LV_DRAW_TASK_TYPE_LAYER: {
+                /* Only the SCALED layer composite (the clock morph) is hardware
+                 * accelerated here — that is the case the SW renderer chokes on.
+                 * Unscaled / opacity-faded layers stay on the SW unit. */
+                lv_draw_image_dsc_t * dsc = t->draw_dsc;
+                lv_layer_t * src_layer = (lv_layer_t *)dsc->src;
+                bool scaled = (dsc->scale_x != LV_SCALE_NONE) || (dsc->scale_y != LV_SCALE_NONE);
+                if(!scaled) return 0;
+                if(src_layer == NULL || src_layer->draw_buf == NULL) return 0;
+
+                lv_color_format_t scf = src_layer->draw_buf->header.cf;
+                if(!(dsc->clip_radius == 0
+                     && dsc->bitmap_mask_src == NULL
+                     && dsc->blend_mode == LV_BLEND_MODE_NORMAL
+                     && dsc->recolor_opa <= LV_OPA_MIN
+                     && dsc->opa >= (lv_opa_t)LV_OPA_MAX
+                     && dsc->skew_x == 0
+                     && dsc->skew_y == 0
+                     && dsc->rotation == 0
+                     && dsc->scale_x > 0
+                     && dsc->scale_y > 0
+                     && (scf == LV_COLOR_FORMAT_ARGB8888
+                         || scf == LV_COLOR_FORMAT_XRGB8888
+                         || scf == LV_COLOR_FORMAT_RGB565)
+                     && (base->layer->color_format == LV_COLOR_FORMAT_RGB888
+                         || base->layer->color_format == LV_COLOR_FORMAT_RGB565))) {
+                    return 0;
+                }
+
+                /* Scaled output must fit the scratch buffer. */
+                int64_t sw = ((int64_t)src_layer->draw_buf->header.w * dsc->scale_x) / LV_SCALE_NONE;
+                int64_t sh = ((int64_t)src_layer->draw_buf->header.h * dsc->scale_y) / LV_SCALE_NONE;
+                if(sw <= 0 || sh <= 0 || (size_t)(sw * sh * 4) > PPA_SCRATCH_SIZE) return 0;
+
+                if(t->preference_score > DRAW_UNIT_PPA_PREF_SCORE) {
+                    t->preference_score = DRAW_UNIT_PPA_PREF_SCORE;
+                    t->preferred_draw_unit_id = DRAW_UNIT_ID_PPA;
+                }
+                return 1;
+            }
 #endif
         default:
             return 0;
@@ -191,6 +232,12 @@ static void ppa_execute_drawing(lv_draw_ppa_unit_t * u)
             break;
         case LV_DRAW_TASK_TYPE_IMAGE:
             lv_draw_ppa_img(t, (lv_draw_image_dsc_t *)t->draw_dsc, &area);
+            lv_draw_buf_invalidate_cache(buf, &area);
+            break;
+        case LV_DRAW_TASK_TYPE_LAYER:
+            /* Pass the full (unclipped) layer placement; normal_helper clips
+             * against t->clip_area itself, mirroring lv_draw_sw_layer. */
+            lv_draw_ppa_layer(t, (lv_draw_image_dsc_t *)t->draw_dsc, &t->area);
             lv_draw_buf_invalidate_cache(buf, &area);
             break;
         default:

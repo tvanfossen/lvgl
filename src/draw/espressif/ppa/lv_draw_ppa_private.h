@@ -56,6 +56,12 @@ extern "C" {
 *      DEFINES
 *********************/
 
+/* Scratch buffer for the SRM-scaled intermediate (ARGB8888). Sized for a
+ * full-screen image; the clock morph needs far less. Allocated once, lazily. */
+#define PPA_SCRATCH_W    1024
+#define PPA_SCRATCH_H    600
+#define PPA_SCRATCH_SIZE ((size_t)PPA_SCRATCH_W * PPA_SCRATCH_H * 4)
+
 /**********************
 *      TYPEDEFS
 **********************/

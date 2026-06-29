@@ -44,6 +44,12 @@ void lv_draw_ppa_fill(lv_draw_task_t * t, const lv_draw_fill_dsc_t * dsc,
 void lv_draw_ppa_img(lv_draw_task_t * t, const lv_draw_image_dsc_t * dsc,
                      const lv_area_t * coords);
 
+/* Composite a (possibly scaled) layer onto the target via PPA hardware:
+ * SRM scales the layer's ARGB8888 buffer into a scratch buffer, then a PPA
+ * blend alpha-composites it over the destination. Used for the clock morph. */
+void lv_draw_ppa_layer(lv_draw_task_t * t, const lv_draw_image_dsc_t * dsc,
+                       const lv_area_t * coords);
+
 /**********************
  *      MACROS
  **********************/
