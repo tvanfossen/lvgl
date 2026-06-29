@@ -129,6 +129,11 @@ void lv_lottie_set_buffer(lv_obj_t * obj, int32_t w, int32_t h, void * buf)
     lv_draw_buf_t * draw_buf = lv_canvas_get_draw_buf(obj);
     lv_draw_buf_set_flag(draw_buf, LV_IMAGE_FLAGS_PREMULTIPLIED);
 
+    /* The caller's buffer is uninitialized (heap_caps_alloc); clear it to
+     * transparent so nothing composites garbage before the first ThorVG render
+     * (which only happens once the source is parsed + finalized off-lock). */
+    lv_draw_buf_clear(draw_buf, NULL);
+
     /*Force updating when the buffer changes*/
     float f_current;
     tvg_animation_get_frame(lottie->tvg_anim, &f_current);
