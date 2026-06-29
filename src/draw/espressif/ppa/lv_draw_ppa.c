@@ -118,8 +118,8 @@ static int32_t ppa_evaluate(lv_draw_unit_t * u, lv_draw_task_t * t)
                      && dsc->opa <= (lv_opa_t)LV_OPA_MAX
                      && dsc->skew_y == 0
                      && dsc->skew_x == 0
-                     && dsc->scale_x == 256
-                     && dsc->scale_y == 256
+                     && dsc->scale_x > 0
+                     && dsc->scale_y > 0
                      && dsc->rotation == 0
                      && lv_image_src_get_type(dsc->src) == LV_IMAGE_SRC_VARIABLE
                      // RGB565/888 take the opaque copy path; straight ARGB8888/
@@ -132,6 +132,20 @@ static int32_t ppa_evaluate(lv_draw_unit_t * u, lv_draw_task_t * t)
                      && (dsc->base.layer->color_format == LV_COLOR_FORMAT_RGB888
                          || dsc->base.layer->color_format == LV_COLOR_FORMAT_RGB565))) {
                     return 0;
+                }
+
+                // Scaled images (the clock-morph snapshot) only via the SRM path,
+                // and only for ARGB/XRGB that fits the scratch buffer. RGB565/888
+                // stay unscaled (copy/blend). Routed by lv_draw_ppa_img.
+                bool img_scaled = (dsc->scale_x != 256) || (dsc->scale_y != 256);
+                if(img_scaled) {
+                    if(!(dsc->header.cf == LV_COLOR_FORMAT_ARGB8888
+                         || dsc->header.cf == LV_COLOR_FORMAT_XRGB8888)) {
+                        return 0;
+                    }
+                    int64_t sw = ((int64_t)dsc->header.w * dsc->scale_x) / 256;
+                    int64_t sh = ((int64_t)dsc->header.h * dsc->scale_y) / 256;
+                    if(sw <= 0 || sh <= 0 || (size_t)(sw * sh * 4) > PPA_SCRATCH_SIZE) return 0;
                 }
 
                 if(t->preference_score > DRAW_UNIT_PPA_PREF_SCORE) {
