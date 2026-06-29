@@ -297,6 +297,7 @@ static void lv_lottie_constructor(const lv_obj_class_t * class_p, lv_obj_t * obj
 
     lottie->src_loaded          = false;
     lottie->initial_render_done = false;
+    lottie->last_frame          = -1;
     lottie->destroying          = false;
     lottie->render_failed       = false;
     lottie->render_done_sem     = NULL;
@@ -472,6 +473,14 @@ static void lottie_update(lv_lottie_t * lottie, int32_t v)
     /* Guard: calling tvg_canvas_update on an empty (unloaded) canvas corrupts the heap. */
     if(!lottie->src_loaded) return;
     if(lottie->render_failed) return;
+
+    /* Frame dedup: the LVGL anim engine calls this on every refresh tick (~60Hz),
+     * but the integer frame only changes target_fps times/sec. Re-rendering an
+     * identical frame blocks the LVGL task for ~render_ms (full ThorVG composite)
+     * with no visual change and pins the CPU at 100%, starving transitions. Skip
+     * when the frame is unchanged. The first render always runs (last_frame=-1). */
+    if(v == lottie->last_frame) return;
+    lottie->last_frame = v;
 
     lv_obj_t * obj = (lv_obj_t *) lottie;
 
