@@ -19,6 +19,14 @@ static void lv_draw_img_ppa_scaled_core(lv_draw_task_t * t, const lv_draw_image_
                                         const lv_image_decoder_dsc_t * decoder_dsc, lv_draw_image_sup_t * sup,
                                         const lv_area_t * img_coords, const lv_area_t * clipped_img_area);
 
+static void lv_draw_img_ppa_argb_core(lv_draw_task_t * t, const lv_draw_image_dsc_t * draw_dsc,
+                                      const lv_image_decoder_dsc_t * decoder_dsc, lv_draw_image_sup_t * sup,
+                                      const lv_area_t * img_coords, const lv_area_t * clipped_img_area);
+
+static inline bool cf_is_argb(lv_color_format_t cf)
+{
+    return cf == LV_COLOR_FORMAT_ARGB8888 || cf == LV_COLOR_FORMAT_XRGB8888;
+}
 
 void lv_draw_ppa_img(lv_draw_task_t * t, const lv_draw_image_dsc_t * dsc,
                      const lv_area_t * coords)
@@ -26,8 +34,11 @@ void lv_draw_ppa_img(lv_draw_task_t * t, const lv_draw_image_dsc_t * dsc,
     if(dsc->opa <= (lv_opa_t)LV_OPA_MIN)
         return;
     bool scaled = (dsc->scale_x != LV_SCALE_NONE) || (dsc->scale_y != LV_SCALE_NONE);
-    lv_draw_image_normal_helper(t, dsc, coords,
-                                scaled ? lv_draw_img_ppa_scaled_core : lv_draw_img_ppa_core, NULL);
+    lv_draw_image_core_cb core;
+    if(scaled)                          core = lv_draw_img_ppa_scaled_core;  /* SRM + blend */
+    else if(cf_is_argb(dsc->header.cf)) core = lv_draw_img_ppa_argb_core;    /* alpha blend */
+    else                                core = lv_draw_img_ppa_core;         /* opaque copy */
+    lv_draw_image_normal_helper(t, dsc, coords, core, NULL);
 }
 
 void lv_draw_ppa_layer(lv_draw_task_t * t, const lv_draw_image_dsc_t * dsc,
@@ -129,6 +140,92 @@ static void lv_draw_img_ppa_core(lv_draw_task_t * t, const lv_draw_image_dsc_t *
     if(ret != ESP_OK) {
         LV_LOG_WARN("PPA draw_img blend failed: %d", ret);
     }
+}
+
+/* Alpha-blend a straight ARGB8888 / XRGB8888 image over the destination,
+ * honoring per-pixel alpha (transparency) and the descriptor's global opacity.
+ * Unscaled. Used for the radar basemap (opaque) and precipitation overlay
+ * (transparent + opa<COVER), which the SW renderer composited slowly. */
+static void lv_draw_img_ppa_argb_core(lv_draw_task_t * t, const lv_draw_image_dsc_t * draw_dsc,
+                                      const lv_image_decoder_dsc_t * decoder_dsc, lv_draw_image_sup_t * sup,
+                                      const lv_area_t * img_coords, const lv_area_t * clipped_img_area)
+{
+    LV_UNUSED(sup);
+    lv_layer_t * layer        = t->target_layer;
+    lv_draw_buf_t * dest      = layer->draw_buf;
+    const lv_draw_buf_t * src = decoder_dsc->decoded;
+    lv_draw_ppa_unit_t * u    = (lv_draw_ppa_unit_t *)t->draw_unit;
+
+    lv_color_format_t src_cf  = src->header.cf;
+    lv_color_format_t dest_cf = dest->header.cf;
+    uint32_t src_stride_px = src->header.stride / lv_color_format_get_size(src_cf);
+    uint32_t dst_stride_px = dest->header.stride / lv_color_format_get_size(dest_cf);
+
+    lv_area_t clip = *clipped_img_area;
+    int32_t blk_w = lv_area_get_width(&clip);
+    int32_t blk_h = lv_area_get_height(&clip);
+    if(blk_w <= 0 || blk_h <= 0) return;
+
+    int32_t fg_off_x  = clip.x1 - img_coords->x1;          /* into the source image */
+    int32_t fg_off_y  = clip.y1 - img_coords->y1;
+    int32_t dst_off_x = clip.x1 - layer->buf_area.x1;       /* into the target buffer */
+    int32_t dst_off_y = clip.y1 - layer->buf_area.y1;
+    if(fg_off_x < 0 || fg_off_y < 0) return;
+
+    ppa_blend_oper_config_t bl = {
+        .in_bg = {
+            .buffer         = dest->data,
+            .pic_w          = dst_stride_px,
+            .pic_h          = dest->header.h,
+            .block_w        = blk_w,
+            .block_h        = blk_h,
+            .block_offset_x = dst_off_x,
+            .block_offset_y = dst_off_y,
+            .blend_cm       = lv_color_format_to_ppa_blend(dest_cf),
+        },
+        .bg_alpha_update_mode = PPA_ALPHA_FIX_VALUE,
+        .bg_alpha_fix_val     = 0xFF,
+        .in_fg = {
+            .buffer         = (void *)src->data,
+            .pic_w          = src_stride_px,
+            .pic_h          = src->header.h,
+            .block_w        = blk_w,
+            .block_h        = blk_h,
+            .block_offset_x = fg_off_x,
+            .block_offset_y = fg_off_y,
+            .blend_cm       = PPA_BLEND_COLOR_MODE_ARGB8888,
+        },
+        .out = {
+            .buffer         = dest->data,
+            .buffer_size    = dest->data_size,
+            .pic_w          = dst_stride_px,
+            .pic_h          = dest->header.h,
+            .block_offset_x = dst_off_x,
+            .block_offset_y = dst_off_y,
+            .blend_cm       = lv_color_format_to_ppa_blend(dest_cf),
+        },
+        .mode      = PPA_TRANS_MODE_BLOCKING,
+        .user_data = u,
+    };
+
+    /* Foreground alpha:
+     *  - XRGB8888: no real alpha → force opaque (or the global opa value).
+     *  - ARGB8888 opaque: use the per-pixel alpha as-is.
+     *  - ARGB8888 with global opa<COVER: scale the per-pixel alpha. */
+    if(src_cf == LV_COLOR_FORMAT_XRGB8888) {
+        bl.fg_alpha_update_mode = PPA_ALPHA_FIX_VALUE;
+        bl.fg_alpha_fix_val     = (draw_dsc->opa >= (lv_opa_t)LV_OPA_COVER) ? 0xFF : draw_dsc->opa;
+    }
+    else if(draw_dsc->opa >= (lv_opa_t)LV_OPA_COVER) {
+        bl.fg_alpha_update_mode = PPA_ALPHA_NO_CHANGE;
+    }
+    else {
+        bl.fg_alpha_update_mode = PPA_ALPHA_SCALE;
+        bl.fg_alpha_scale_ratio = (float)draw_dsc->opa / 255.0f;
+    }
+
+    esp_err_t ret = ppa_do_blend(u->blend_client, &bl);
+    if(ret != ESP_OK) LV_LOG_WARN("PPA argb blend failed: %d", ret);
 }
 
 /* Two-pass hardware composite of a scaled image/layer:

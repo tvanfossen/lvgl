@@ -122,8 +122,13 @@ static int32_t ppa_evaluate(lv_draw_unit_t * u, lv_draw_task_t * t)
                      && dsc->scale_y == 256
                      && dsc->rotation == 0
                      && lv_image_src_get_type(dsc->src) == LV_IMAGE_SRC_VARIABLE
+                     // RGB565/888 take the opaque copy path; straight ARGB8888/
+                     // XRGB8888 take the alpha-blend path. ARGB8888_PREMULTIPLIED
+                     // (the Lottie canvas) is intentionally excluded → stays SW.
                      && (dsc->header.cf == LV_COLOR_FORMAT_RGB888
-                         || dsc->header.cf == LV_COLOR_FORMAT_RGB565)
+                         || dsc->header.cf == LV_COLOR_FORMAT_RGB565
+                         || dsc->header.cf == LV_COLOR_FORMAT_ARGB8888
+                         || dsc->header.cf == LV_COLOR_FORMAT_XRGB8888)
                      && (dsc->base.layer->color_format == LV_COLOR_FORMAT_RGB888
                          || dsc->base.layer->color_format == LV_COLOR_FORMAT_RGB565))) {
                     return 0;
