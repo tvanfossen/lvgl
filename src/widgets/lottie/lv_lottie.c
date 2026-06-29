@@ -186,13 +186,17 @@ void lv_lottie_finalize_src(lv_obj_t * obj)
     tvg_animation_get_total_frame(lottie->tvg_anim, &f_total);
     tvg_unlock();
 
+    /* Skip the junk frame 0 that some Lottie exports render as noise: start
+     * playback (and the inline first render) at frame 1. */
+    int32_t start_frame = (f_total > 1) ? 1 : 0;
     if(lottie->anim) {
         lv_anim_set_duration(lottie->anim, (int32_t)f_total * 1000 / 60); /*60 FPS*/
         lottie->anim->act_time = 0;
+        lottie->anim->start_value = start_frame;
         lottie->anim->end_value = (int32_t)f_total;
         lottie->anim->reverse_play_in_progress = false;
     }
-    lottie_update(lottie, 0);   /* inline first render (takes the ThorVG mutex itself) */
+    lottie_update(lottie, start_frame);   /* inline first render (takes the ThorVG mutex itself) */
 }
 
 void lv_lottie_set_src_data(lv_obj_t * obj, const void * src, size_t src_size)
@@ -222,14 +226,16 @@ void lv_lottie_set_src_file(lv_obj_t * obj, const char * src)
     ESP_LOGD(LV_LOTTIE_TAG, "CP5: tvg_animation_get_total_frame start");
     tvg_animation_get_total_frame(lottie->tvg_anim, &f_total);
     ESP_LOGD(LV_LOTTIE_TAG, "CP6: tvg_animation_get_total_frame done f_total=%d", (int)f_total);
+    int32_t start_frame = (f_total > 1) ? 1 : 0;   /* skip junk frame 0 */
     if(lottie->anim) {
         lv_anim_set_duration(lottie->anim, (int32_t)f_total * 1000 / 60); /*60 FPS*/
         lottie->anim->act_time = 0;
+        lottie->anim->start_value = start_frame;
         lottie->anim->end_value = (int32_t)f_total;
         lottie->anim->reverse_play_in_progress = false;
     }
     ESP_LOGD(LV_LOTTIE_TAG, "CP7: calling lottie_update (initial, inline on load-task stack)");
-    lottie_update(lottie, 0);   /*Render immediately*/
+    lottie_update(lottie, start_frame);   /*Render immediately*/
     ESP_LOGD(LV_LOTTIE_TAG, "CP8: lottie_update done");
 }
 
@@ -270,6 +276,7 @@ void lv_lottie_resume(lv_obj_t * obj, uint32_t target_fps)
     lv_anim_set_var(&a, obj);
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
     lv_anim_set_duration(&a, (int32_t)f_total * 1000 / target_fps);
+    a.start_value = (f_total > 1) ? 1 : 0;   /* skip junk frame 0 */
     a.end_value = (int32_t)f_total;
     lottie->anim = lv_anim_start(&a);
 }
