@@ -71,6 +71,24 @@ void lv_lottie_set_draw_buf(lv_obj_t * obj, lv_draw_buf_t * draw_buf);
 void lv_lottie_set_src_data(lv_obj_t * obj, const void * src, size_t src_size);
 
 /**
+ * Parse the animation data WITHOUT the LVGL lock (the heavy ThorVG load). Pair
+ * with lv_lottie_finalize_src (which must be called under the LVGL lock). This
+ * keeps the ~hundreds-of-ms parse off the LVGL lock so it doesn't freeze
+ * rendering. A ThorVG mutex serializes the parse vs the render task internally.
+ * @param obj       pointer to a lottie widget
+ * @param src       the lottie animation as a nul-terminated array
+ * @param src_size  size of the source array in bytes
+ */
+void lv_lottie_parse_src_data(lv_obj_t * obj, const void * src, size_t src_size);
+
+/**
+ * Attach a previously lv_lottie_parse_src_data'd animation. MUST be called under
+ * the LVGL lock (touches the canvas + does the inline first render).
+ * @param obj   pointer to a lottie widget
+ */
+void lv_lottie_finalize_src(lv_obj_t * obj);
+
+/**
  * Set the source for the animation as a path.
  * Lottie doesn't use LVGL's File System API.
  * @param obj       pointer to a lottie widget
@@ -92,6 +110,21 @@ lv_anim_t * lv_lottie_get_anim(lv_obj_t * obj);
  * @return      true if the render task could not be created
  */
 bool lv_lottie_render_failed(lv_obj_t * obj);
+
+/**
+ * Pause the Lottie animation (delete lv_anim, keep ThorVG state).
+ * Used to cache the widget across state transitions without re-parsing JSON.
+ * @param obj   pointer to a lottie widget
+ */
+void lv_lottie_pause(lv_obj_t * obj);
+
+/**
+ * Resume a paused Lottie animation by creating a new lv_anim.
+ * No-op if src is not loaded or animation is already running.
+ * @param obj        pointer to a lottie widget
+ * @param target_fps desired frames per second
+ */
+void lv_lottie_resume(lv_obj_t * obj, uint32_t target_fps);
 
 /**********************
  * GLOBAL VARIABLES
