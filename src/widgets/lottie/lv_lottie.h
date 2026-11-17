@@ -121,10 +121,21 @@ void lv_lottie_pause(lv_obj_t * obj);
 /**
  * Resume a paused Lottie animation by creating a new lv_anim.
  * No-op if src is not loaded or animation is already running.
+ * greenwood: playback is always real-time (authored 60 fps); @p target_fps caps how many
+ * frames per second are RENDERED (see lv_lottie_set_render_fps). It used to set the
+ * playback rate, which slowed a 60 fps animation to target_fps/60 speed.
  * @param obj        pointer to a lottie widget
- * @param target_fps desired frames per second
+ * @param target_fps maximum rendered frames per second (0 or >= 60: render every frame)
  */
 void lv_lottie_resume(lv_obj_t * obj, uint32_t target_fps);
+
+/**
+ * greenwood: cap the render rate without changing playback speed. Frames are quantised to
+ * every (60 / fps)th frame, so the existing frame-dedup skips the in-between ticks.
+ * @param obj  pointer to a lottie widget
+ * @param fps  maximum rendered frames per second (0 or >= 60: render every frame)
+ */
+void lv_lottie_set_render_fps(lv_obj_t * obj, uint32_t fps);
 
 /**********************
  * GLOBAL VARIABLES

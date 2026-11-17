@@ -45,6 +45,7 @@ typedef struct {
     lv_anim_t * anim;
     int32_t last_rendered_time;
     int32_t last_frame;           /**< Last integer frame actually rendered; -1 = none yet (frame-dedup) */
+    int32_t render_step;          /**< greenwood: render every Nth frame (render-rate cap at real-time speed); 1 = all */
 
     /* --- shared render task sync --- */
     bool src_loaded;              /**< True once source loaded; guards lottie_update */

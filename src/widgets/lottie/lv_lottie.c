@@ -267,10 +267,17 @@ void lv_lottie_pause(lv_obj_t * obj)
     }
 }
 
+void lv_lottie_set_render_fps(lv_obj_t * obj, uint32_t fps)
+{
+    lv_lottie_t * lottie = (lv_lottie_t *)obj;
+    lottie->render_step = (fps > 0 && fps < 60) ? (int32_t)(60 / fps) : 1;
+}
+
 void lv_lottie_resume(lv_obj_t * obj, uint32_t target_fps)
 {
     lv_lottie_t * lottie = (lv_lottie_t *)obj;
     if(!lottie->src_loaded || lottie->anim) return;
+    lv_lottie_set_render_fps(obj, target_fps);
 
     float f_total;
     tvg_animation_get_total_frame(lottie->tvg_anim, &f_total);
@@ -280,7 +287,7 @@ void lv_lottie_resume(lv_obj_t * obj, uint32_t target_fps)
     lv_anim_set_exec_cb(&a, anim_exec_cb);
     lv_anim_set_var(&a, obj);
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_duration(&a, (int32_t)f_total * 1000 / target_fps);
+    lv_anim_set_duration(&a, (int32_t)f_total * 1000 / 60);   /* real time (authored 60 fps) */
     a.start_value = (f_total > 1) ? 1 : 0;   /* skip junk frame 0 */
     a.end_value = (int32_t)f_total;
     lottie->anim = lv_anim_start(&a);
@@ -310,6 +317,7 @@ static void lv_lottie_constructor(const lv_obj_class_t * class_p, lv_obj_t * obj
     lottie->src_loaded          = false;
     lottie->initial_render_done = false;
     lottie->last_frame          = -1;
+    lottie->render_step         = 1;
     lottie->destroying          = false;
     lottie->render_failed       = false;
     lottie->render_done_sem     = NULL;
@@ -399,6 +407,13 @@ static void lv_lottie_destructor(const lv_obj_class_t * class_p, lv_obj_t * obj)
 static void anim_exec_cb(void * var, int32_t v)
 {
     lv_lottie_t * lottie = var;
+
+    /* greenwood: render-rate cap at real-time speed — quantise to every render_step-th
+     * frame; lottie_update()'s last_frame dedup then skips the in-between ticks. */
+    if(lottie->render_step > 1) {
+        int32_t start = lottie->anim ? lottie->anim->start_value : 0;
+        v -= (v - start) % lottie->render_step;
+    }
 
     /*Do not render not visible animations.*/
     if(lv_obj_is_visible(var)) {
