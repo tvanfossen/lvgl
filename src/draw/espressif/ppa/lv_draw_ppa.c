@@ -10,6 +10,9 @@
 #include "lv_draw_ppa_private.h"
 #include "lv_draw_ppa.h"
 
+/* greenwood: smallest clipped area (px) worth a PPA transaction; below this the SW unit wins. */
+#define PPA_MIN_AREA_PX (64 * 64)
+
 #if LV_USE_PPA
 
 /*********************
@@ -91,6 +94,13 @@ static int32_t ppa_evaluate(lv_draw_unit_t * u, lv_draw_task_t * t)
     const lv_draw_dsc_base_t * base = (lv_draw_dsc_base_t *)t->draw_dsc;
 
     if(!ppa_dest_cf_supported(base->layer->color_format)) return 0;
+
+    /* greenwood: tiny ops stay on the SW unit. A PPA op is a blocking DMA transaction
+     * (setup + completion wait + cache maintenance); for the ~10x10 px areas a particle
+     * redraw produces, a CPU copy/fill of a few hundred pixels is cheaper. */
+    lv_area_t clipped;
+    if(!lv_area_intersect(&clipped, &t->area, &t->clip_area)) return 0;
+    if(lv_area_get_size(&clipped) < PPA_MIN_AREA_PX) return 0;
 
     switch(t->type) {
         case LV_DRAW_TASK_TYPE_FILL: {
