@@ -55,7 +55,7 @@
 #define MAX_CODE_SIZE 12
 
 #define MAX_COLORS 256
-#define MAX_WIDTH 480
+#define MAX_WIDTH 1024  // greenwood: was 480 — rejected full-screen 1024x600 GIFs with GIF_TOO_WIDE
 #define LZW_BUF_SIZE (6*MAX_CHUNK_SIZE)
 #define LZW_HIGHWATER (4*MAX_CHUNK_SIZE)
 // This buffer is used to store the pixel sequence in reverse order
