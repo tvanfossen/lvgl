@@ -242,22 +242,25 @@ static void ppa_execute_drawing(lv_draw_ppa_unit_t * u)
     lv_area_t area;
 
     if(!lv_area_intersect(&area, &t->area, &t->clip_area)) return;
-    lv_draw_buf_invalidate_cache(buf, &area);
+    /* greenwood: the cache handler takes BUFFER-relative coords (task areas are absolute). */
+    lv_area_t buf_rel = area;
+    lv_area_move(&buf_rel, -layer->buf_area.x1, -layer->buf_area.y1);
+    lv_draw_buf_invalidate_cache(buf, &buf_rel);
 
     switch(t->type) {
         case LV_DRAW_TASK_TYPE_FILL:
             lv_draw_ppa_fill(t, (lv_draw_fill_dsc_t *)t->draw_dsc, &area);
-            lv_draw_buf_invalidate_cache(buf, &area);
+            lv_draw_buf_invalidate_cache(buf, &buf_rel);
             break;
         case LV_DRAW_TASK_TYPE_IMAGE:
             lv_draw_ppa_img(t, (lv_draw_image_dsc_t *)t->draw_dsc, &area);
-            lv_draw_buf_invalidate_cache(buf, &area);
+            lv_draw_buf_invalidate_cache(buf, &buf_rel);
             break;
         case LV_DRAW_TASK_TYPE_LAYER:
             /* Pass the full (unclipped) layer placement; normal_helper clips
              * against t->clip_area itself, mirroring lv_draw_sw_layer. */
             lv_draw_ppa_layer(t, (lv_draw_image_dsc_t *)t->draw_dsc, &t->area);
-            lv_draw_buf_invalidate_cache(buf, &area);
+            lv_draw_buf_invalidate_cache(buf, &buf_rel);
             break;
         default:
             break;

@@ -380,7 +380,9 @@ static void lv_draw_img_ppa_scaled_core(lv_draw_task_t * t, const lv_draw_image_
      * region is larger than the caller's t->area-based invalidation, so the
      * extra scaled pixels (written by PPA DMA) would otherwise be read stale by
      * the CPU/flush → torn/garbage output. */
-    lv_draw_buf_invalidate_cache(dest, clipped_img_area);
+    lv_area_t written_rel = *clipped_img_area;   /* greenwood: handler takes buffer-relative coords */
+    lv_area_move(&written_rel, -layer->buf_area.x1, -layer->buf_area.y1);
+    lv_draw_buf_invalidate_cache(dest, &written_rel);
 }
 
 #endif /* LV_USE_PPA */
