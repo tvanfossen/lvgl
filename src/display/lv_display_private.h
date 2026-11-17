@@ -27,7 +27,7 @@ extern "C" {
  *      DEFINES
  *********************/
 #ifndef LV_INV_BUF_SIZE
-#define LV_INV_BUF_SIZE 32 /**< Buffer size for invalid areas */
+#define LV_INV_BUF_SIZE 256 /**< Buffer size for invalid areas. greenwood: was 32 — ~140 snowflake dirty rects/frame overflowed it and forced full-screen redraws */
 #endif
 
 /**********************
